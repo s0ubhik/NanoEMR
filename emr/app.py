@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from . import seed
 from .web import ui
-from .web.router import App, serve
+from .web.router import App, serve, set_base
 from .web.routes import register_all
 
 
@@ -27,5 +27,6 @@ def _error_page(status: int, message: str) -> str:
     return ui.page(f"{status}", "dashboard", body)
 
 
-def main(host: str = "127.0.0.1", port: int = 8765) -> None:
+def main(host: str = "127.0.0.1", port: int = 8765, base_uri: str = "") -> None:
+    set_base(base_uri)
     serve(create_app(), host, port)

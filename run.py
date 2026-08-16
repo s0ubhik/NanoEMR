@@ -5,6 +5,7 @@
     python3 run.py --port 9000
     python3 run.py --demo          # seed demo patients/visits/labs/bills first
     python3 run.py --reset --demo  # start from a clean database
+    python3 run.py --base-uri /emr # serve under a sub-path, behind a proxy
 """
 
 from __future__ import annotations
@@ -26,7 +27,20 @@ def main() -> None:
                         help="delete the existing database first")
     parser.add_argument("--no-serve", action="store_true",
                         help="set up the database and exit")
+    parser.add_argument("--base-uri", default=os.environ.get("NANOEMR_BASE_URI", ""),
+                        metavar="PREFIX",
+                        help="serve every route under a URL prefix, e.g. /emr "
+                             "(default: the root; env NANOEMR_BASE_URI)")
     args = parser.parse_args()
+
+    from emr.web.router import set_base
+
+    try:
+        base = set_base(args.base_uri)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if base:
+        print(f"  mounted under {base}")
 
     from emr import db
 

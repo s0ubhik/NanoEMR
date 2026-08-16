@@ -1174,6 +1174,74 @@ def main() -> int:
     check("query parameters are read with a default",
           Request("GET", "/", {"q": ["x"]}, {}, empty, {}, b"").q("missing", "d") == "d")
 
+    section("mount prefix")
+    from emr.web import router as _router
+
+    check("no prefix is the default", _router.base() == "")
+    check("a path is untouched without a prefix", _router.url("/patients") == "/patients")
+    for given, expected in (("/emr", "/emr"), ("emr", "/emr"), ("/emr/", "/emr"),
+                            ("https://hospital.example/emr/", "/emr"),
+                            ("/a/b", "/a/b"), ("", ""), ("/", "")):
+        check(f"{given!r} normalises to {expected!r}",
+              _router.set_base(given) == expected)
+    for bad in ("/emr space", "/emr?x=1", "/emr#top", "/emr/../etc"):
+        try:
+            _router.set_base(bad)
+            check(f"{bad!r} is refused", False)
+        except ValueError:
+            check(f"{bad!r} is refused", True)
+
+    try:
+        _router.set_base("/emr")
+        check("the prefix is what the app reports", _router.base() == "/emr")
+        check("url() prefixes an app path", _router.url("/patients") == "/emr/patients")
+        check("url() does not leave a bare trailing slash", _router.url("/") == "/emr")
+
+        from emr.app import _error_page
+
+        mounted = App()
+        register_all(mounted)
+        mounted.error_page = _error_page  # wired exactly as create_app() does
+        home = mounted.dispatch("GET", "/emr/", {}, {}, SimpleCookie(), b"")
+        check("the mounted root routes to the dashboard", home.status == 200)
+        page_html = home.body.decode("utf-8")
+        check("every link in the page carries the prefix",
+              '="/emr/patients"' in page_html
+              and not _re.search(r'(?:href|action|src)="/(?!emr/)', page_html))
+        check("the static assets move with the app",
+              'href="/emr/static/favicon.png"' in page_html)
+        check("the CDN is left alone", f'href="{ui.CDN}/css/kit.min.css"' in page_html)
+        check("the prefix without a trailing slash is still the dashboard",
+              mounted.dispatch("GET", "/emr", {}, {}, SimpleCookie(), b"").status == 200)
+        check("a path off the mount point is a 404",
+              mounted.dispatch("GET", "/patients", {}, {}, SimpleCookie(), b"").status
+              == 404)
+        check("the 404 page's own links are mounted too",
+              '="/emr/"' in mounted.dispatch("GET", "/nope", {}, {}, SimpleCookie(),
+                                             b"").body.decode("utf-8"))
+
+        # A redirect that lost the prefix would send the browser off the mount
+        # point and 404 after every successful save.
+        bounced = _App()
+        bounced.add("POST", "/thing", lambda request: _redirect("/done", "saved"))
+        landed = dict(bounced.dispatch("POST", "/emr/thing", {}, {}, SimpleCookie(),
+                                       b"").headers)
+        check("a redirect Location is mounted", landed["Location"] == "/emr/done")
+        check("the flash cookie is scoped to the mount point",
+              "Path=/emr/" in landed["Set-Cookie"])
+
+        served_asset = mounted.dispatch("GET", "/emr/static/logo.png", {}, {},
+                                        SimpleCookie(), b"")
+        check("a mounted binary response is served untouched",
+              served_asset.status == 200
+              and served_asset.body[:8] == b"\x89PNG\r\n\x1a\n")
+        exported = mounted.dispatch("GET", "/emr/fhir", {}, {}, SimpleCookie(), b"")
+        check("the FHIR centre renders under the prefix", exported.status == 200)
+    finally:
+        # Every later section addresses the app from the root.
+        _router.set_base("")
+    check("the prefix is cleared for the rest of the suite", _router.base() == "")
+
     section("static assets")
     from emr.web.routes import assets as _assets
     from http.cookies import SimpleCookie as _Cookie
