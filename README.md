@@ -1,4 +1,8 @@
-# NanoEMR
+<p  align="center" style="font-size: 25px">Nano EMR</p>
+
+<p align="center">
+  <img src="./emr/web/static/logo.png" width="100" alt="NanoEMR Logo">
+</p>
 
 A complete HMIS/EMR for a 10–20 bed Indian hospital, with every clinical
 artifact exportable as an **NRCES / ABDM FHIR R4 document bundle**.
