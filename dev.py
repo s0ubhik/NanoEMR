@@ -20,7 +20,7 @@ def start():
     print("Starting NanoEMR...")
 
     process = subprocess.Popen(
-        ["python3", "run.py"],
+        ["python3", "run.py"] + sys.argv[1:],
         cwd=BASE_DIR
     )
 
