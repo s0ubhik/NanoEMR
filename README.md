@@ -1,4 +1,4 @@
-<p  align="center" style="font-size: 25px">Nano EMR</p>
+<p  align="center" style="font-size: 30px">NanoEMR</p>
 
 <p align="center">
   <img src="./emr/web/static/logo.png" width="100" alt="NanoEMR Logo">
