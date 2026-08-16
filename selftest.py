@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end self test.
+"""End-to-end self test
 
     python3 selftest.py          # exit code 0 when every check passes
 
