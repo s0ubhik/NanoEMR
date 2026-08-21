@@ -77,6 +77,7 @@ NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Finance", [
         ("billing", "/billing", "receipt-indian-rupee"),
+        ("claims", "/claims", "shield-check"),
         ("reports", "/reports", "chart-column"),
     ]),
     ("Facility", [
@@ -101,6 +102,7 @@ NAV_LABEL = {
     "pharmacy": "Pharmacy & stock",
     "wellness": "Wellness records",
     "billing": "Billing",
+    "claims": "Claims",
     "reports": "Reports",
     "fhir": "FHIR export centre",
     "masters": "Masters",
@@ -115,6 +117,7 @@ NAV_ALIAS = {
     "ipd-new": "ipd",
     "dialysis-new": "dialysis-sessions",
     "wellness-new": "wellness",
+    "claim-new": "claims",
 }
 
 

@@ -703,6 +703,117 @@ CREATE TABLE IF NOT EXISTS wellness_record (
 CREATE INDEX IF NOT EXISTS ix_wellness ON wellness_record (patient_id,
                                                            recorded_on DESC);
 
+-- =========================================================================
+-- NHCX claims — policy search, coverage eligibility and (later) preauth.
+-- One row per claim episode; the FHIR exchange itself is delegated to a
+-- local hcxkit gateway, this table keeps the EMR-side ledger and verdict.
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS claim (
+    id               INTEGER PRIMARY KEY,
+    claim_no         TEXT NOT NULL UNIQUE,
+    created_at       TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'draft',  -- draft | checking | eligible | not-eligible | error
+    -- how the beneficiary was found (inputs to the policy search)
+    search_id_type   TEXT,                           -- MobileNo | AbhaNumber | MemberId
+    search_id_value  TEXT,
+    -- the policy the operator selected from the search result
+    member_id        TEXT NOT NULL,                  -- PMJAY beneficiary / member ID
+    policy_code      TEXT,                           -- national health plan identifier, e.g. PMJAY/HP/S/G
+    beneficiary_name TEXT,
+    abha_number      TEXT,
+    mobile_number    TEXT,
+    payer_id         TEXT,                           -- NIIP, e.g. 1518
+    payer_name       TEXT,
+    product_id       TEXT,
+    product_name     TEXT,
+    policy_json      TEXT,                           -- raw policy row as returned by the search
+    -- coverage eligibility exchange bookkeeping (async via hcxkit)
+    purpose          TEXT,                           -- validation | discovery
+    txn_id           TEXT,                           -- hcxkit ledger ULID of the outbound check
+    correlation_id   TEXT,                           -- x-hcx-correlation_id tying request to on_check
+    checked_at       TEXT,
+    error_message    TEXT,
+    -- payer verdict (flattened from the CoverageEligibilityResponse bundle)
+    inforce          INTEGER,                        -- 1 policy in force, 0 not
+    outcome          TEXT,                           -- complete | error | partial
+    disposition      TEXT,
+    auth_required    INTEGER,
+    allowed_amount   REAL,                           -- benefit allowedMoney (sum insured)
+    used_amount      REAL,                           -- benefit usedMoney
+    plan_name        TEXT,
+    plan_period_start TEXT,
+    plan_period_end  TEXT,
+    relationship     TEXT,                           -- subscriber relationship (self, child, …)
+    patient_gender   TEXT,
+    patient_dob      TEXT,
+    patient_address  TEXT,
+    patient_photo    TEXT,                           -- base64 or URL when the payer returns one
+    response_json    TEXT,                           -- full on_check bundle for audit
+    -- link to the admitted patient (same ABHA, current IPD stay)
+    patient_id       INTEGER REFERENCES patient (id),
+    encounter_id     INTEGER REFERENCES encounter (id),
+    -- preauth draft (children in claim_diagnosis / claim_care_team / claim_item)
+    admission_date   TEXT,                           -- YYYY-MM-DD
+    expected_discharge_date TEXT,                    -- provisional, YYYY-MM-DD
+    case_type        TEXT,                           -- package | nonpackage
+    package_code     TEXT,                           -- HBP package (case_type = package)
+    package_name     TEXT,
+    preauth_total    REAL,                           -- package rate or sum of items
+    preauth_saved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_status ON claim (status, id DESC);
+
+-- ICD-10 diagnoses quoted on the preauth (picked from the diagnosis master,
+-- which carries ICD-10 as the secondary coding next to SNOMED).
+CREATE TABLE IF NOT EXISTS claim_diagnosis (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq            INTEGER NOT NULL DEFAULT 1,
+    snomed_code    TEXT,
+    snomed_display TEXT,
+    icd10_code     TEXT NOT NULL,
+    icd10_display  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_dx ON claim_diagnosis (claim_id, seq);
+
+-- The doctors responsible for the admission, quoted on the preauth.
+CREATE TABLE IF NOT EXISTS claim_care_team (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL DEFAULT 1,
+    practitioner_id INTEGER NOT NULL REFERENCES practitioner (id),
+    role            TEXT NOT NULL                    -- claims.CARE_ROLES key
+);
+CREATE INDEX IF NOT EXISTS ix_claim_team ON claim_care_team (claim_id, seq);
+
+-- Non-package case: charge-master items at their fixed price, quantity chosen
+-- by the operator. amount = unit_price * quantity, computed at save time.
+CREATE TABLE IF NOT EXISTS claim_item (
+    id         INTEGER PRIMARY KEY,
+    claim_id   INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL DEFAULT 1,
+    code       TEXT NOT NULL,                        -- charge master code
+    display    TEXT NOT NULL,
+    unit_price REAL NOT NULL DEFAULT 0,              -- fixed, from the master
+    quantity   REAL NOT NULL DEFAULT 1,
+    amount     REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_claim_item ON claim_item (claim_id, seq);
+
+-- Supporting documents (PDF / images) attached to the preauth, stored inline —
+-- a preauth carries a handful of files, well within SQLite's comfort zone.
+CREATE TABLE IF NOT EXISTS claim_document (
+    id           INTEGER PRIMARY KEY,
+    claim_id     INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    label        TEXT,
+    size         INTEGER NOT NULL DEFAULT 0,
+    data         BLOB NOT NULL,
+    uploaded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_claim_doc ON claim_document (claim_id, id);
+
 -- ---------------------------------------------------------------- sequences
 CREATE TABLE IF NOT EXISTS counter (
     name   TEXT PRIMARY KEY,

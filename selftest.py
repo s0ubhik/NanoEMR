@@ -1323,6 +1323,314 @@ def main() -> int:
     except ValueError:
         check("an unknown section is refused", True)
 
+    section("NHCX claims")
+    from emr import claims as _claims
+
+    selected = {
+        "member_id": "MD5SLS4X5", "name": "PALLVI",
+        "policy_code": "PMJAY/HP/S/G", "payer_id": "1518",
+        "payer_name": "Nhcx Pmjay", "product_name": "PMJAY for Himachal",
+        "abha_number": "91-7034-1237-4240", "mobile_number": "9818512600",
+        "raw": {"memberid": "MD5SLS4X5", "payerid": "1518"},
+    }
+    claim_id = _claims.create_claim(selected, "MemberId", "MD5SLS4X5")
+    claim_row = _claims.claim(claim_id)
+    check("a claim opens as a draft with a CLM number",
+          claim_row["status"] == "draft"
+          and claim_row["claim_no"].startswith("CLM-"))
+    check("the selected policy is copied onto the claim",
+          claim_row["member_id"] == "MD5SLS4X5"
+          and claim_row["policy_code"] == "PMJAY/HP/S/G"
+          and json.loads(claim_row["policy_json"])["memberid"] == "MD5SLS4X5")
+    check("the claim ledger lists it",
+          any(r["id"] == claim_id for r in _claims.claims_list("draft")))
+    try:
+        _claims.create_claim({"name": "No Member"}, "MobileNo", "9818512600")
+        check("a policy without a member ID is refused", False)
+    except ValueError:
+        check("a policy without a member ID is refused", True)
+    try:
+        _claims.run_check(claim_id, "validation", "", "MD5SLS4X5")
+        check("a validation check without a policy code is refused", False)
+    except ValueError:
+        check("a validation check without a policy code is refused", True)
+    try:
+        _claims.run_check(claim_id, "validation", "PMJAY/HP/S/G", "MD5SLS4X5")
+        check("a check before the NHCX participant code is set is refused",
+              False)
+    except ValueError as error:
+        check("a check before the NHCX participant code is set is refused",
+              "participant code" in str(error))
+
+    # The payer's on_check reply, reduced to the resources the parser reads.
+    on_check = {"resourceType": "Bundle", "type": "collection", "entry": [
+        {"resource": {
+            "resourceType": "CoverageEligibilityResponse",
+            "outcome": "complete",
+            "disposition": "Policy is currently in-force",
+            "insurance": [{"inforce": True, "item": [{
+                "authorizationRequired": True,
+                "benefit": [{
+                    "allowedMoney": {"currency": "INR", "value": 500000},
+                    "usedMoney": {"currency": "INR", "value": 120000}}]}]}]}},
+        {"resource": {
+            "resourceType": "Patient", "gender": "female",
+            "birthDate": "2002-01-01",
+            "name": [{"text": "PALLVI"}],
+            "identifier": [{"type": {"coding": [{"code": "ABHA"}]},
+                            "value": "91-7034-1237-4240"}],
+            "address": [{"line": ["ISPUR"], "district": "UNA",
+                         "state": "HIMACHAL PRADESH",
+                         "postalCode": "177202"}]}},
+        {"resource": {
+            "resourceType": "Coverage",
+            "class": [{"name": "PMJAY for Himachal"}],
+            "period": {"start": "2023-04-02T00:00:00+05:30",
+                       "end": "2028-04-02T00:00:00+05:30"},
+            "relationship": {"coding": [{"code": "child",
+                                         "display": "Child"}]}}},
+    ]}
+    parsed = _claims.parse_validation_bundle(on_check)
+    check("the verdict is flattened from the response bundle",
+          parsed["inforce"] == 1 and parsed["allowed_amount"] == 500000
+          and parsed["used_amount"] == 120000 and parsed["auth_required"] == 1)
+    check("the payer-enriched beneficiary profile is captured",
+          parsed["patient_address"] == "ISPUR, UNA, HIMACHAL PRADESH, 177202"
+          and parsed["plan_name"] == "PMJAY for Himachal"
+          and parsed["relationship"] == "Child")
+    _claims.apply_response(claim_id, parsed, on_check)
+    claim_row = _claims.claim(claim_id)
+    check("an in-force reply settles the claim as eligible",
+          claim_row["status"] == "eligible"
+          and _claims.balance(claim_row) == 380000)
+    try:
+        _claims.parse_validation_bundle({"resourceType": "Bundle", "entry": []})
+        check("a reply without a verdict resource is refused", False)
+    except ValueError:
+        check("a reply without a verdict resource is refused", True)
+
+    # A 404 from txn/related means hcxkit's ledger lost the transaction (its
+    # database was reset): the claim must settle as an error so the operator
+    # gets "Check again", not an endless "could not poll" note.
+    stuck = _claims.create_claim(selected, "MemberId", "MD5SLS4X5")
+    db.update("claim", stuck, {"status": "checking", "txn_id": "01GONE",
+                               "checked_at": db.now_iso()})
+    real_api = _claims._api
+
+    def _gone(path, payload=None, **kw):
+        raise _claims.GatewayError(
+            f"hcxkit {path} returned 404: transaction not found", 404)
+
+    _claims._api = _gone
+    try:
+        settled = _claims.poll_response(stuck)
+    finally:
+        _claims._api = real_api
+    stuck_row = _claims.claim(stuck)
+    check("a forgotten transaction settles the claim as an error",
+          settled and stuck_row["status"] == "error"
+          and "ledger was reset" in (stuck_row["error_message"] or ""))
+
+    db.update("claim", stuck, {"status": "checking"})
+
+    def _down(path, payload=None, **kw):
+        raise _claims.GatewayError("hcxkit gateway unreachable at test")
+
+    _claims._api = _down
+    try:
+        _claims.poll_response(stuck)
+        check("a transient gateway failure still surfaces, not settles", False)
+    except ValueError:
+        check("a transient gateway failure still surfaces, not settles",
+              _claims.claim(stuck)["status"] == "checking")
+    finally:
+        _claims._api = real_api
+    check("GatewayError is still caught as ValueError by the routes",
+          issubclass(_claims.GatewayError, ValueError))
+
+    # The push half of the same exchange: hcxkit POSTs the inbound envelope to
+    # the callback URL, and the worker reads the reply as a delivery outcome.
+    pushed = _claims.create_claim(selected, "MemberId", "MD5SLS4X5")
+    db.update("claim", pushed, {"status": "checking", "txn_id": "01PUSH",
+                                "correlation_id": "corr-push-1",
+                                "checked_at": db.now_iso()})
+    envelope = {"jwe_headers": {"x-hcx-correlation_id": "corr-push-1"},
+                "fhir": on_check}
+    check("a pushed on_check settles the claim without polling",
+          _claims.receive(envelope, "coverage", "on_request", "fhir") == "settled"
+          and _claims.claim(pushed)["status"] == "eligible")
+    check("redelivering the same callback does not reopen the claim",
+          _claims.receive(envelope, "coverage", "on_request", "fhir") == "ignored"
+          and _claims.claim(pushed)["status"] == "eligible")
+    check("a callback for somebody else's correlation id is ignored",
+          _claims.receive({"jwe_headers": {"x-hcx-correlation_id": "corr-none"},
+                           "fhir": on_check}, "coverage", "on_request",
+                          "fhir") == "unmatched")
+    check("a message type this EMR does not answer is acknowledged, not read",
+          _claims.receive({"fhir": {}}, "claim", "request", "fhir") == "ignored")
+
+    rejected = _claims.create_claim(selected, "MemberId", "MD5SLS4X5")
+    db.update("claim", rejected, {"status": "checking",
+                                  "correlation_id": "corr-push-2",
+                                  "checked_at": db.now_iso()})
+    _claims.receive({"jwe_headers": {"x-hcx-correlation_id": "corr-push-2"},
+                     "fhir": {"type": "ProtocolResponse",
+                              "x-hcx-status": "response.error",
+                              "x-hcx-error_details": {"code": "PAYR-1008",
+                                                      "message": "HFR ID mismatch"}}},
+                    "coverage", "on_request", "fhir")
+    rejected_row = _claims.claim(rejected)
+    check("a pushed gateway rejection settles the claim as an error",
+          rejected_row["status"] == "error"
+          and "PAYR-1008" in (rejected_row["error_message"] or ""))
+
+    section("NHCX preauth")
+    # The beneficiary registered without the dashes the payer writes, and
+    # currently admitted — the digits-only ABHA match must still find them.
+    beneficiary = services.create_patient({
+        "name": "PALLVI", "gender": "female", "birth_date": "2002-01-01",
+        "phone": "+919818512600", "abha_number": "91703412374240"})
+    stay = services.create_encounter("IPD", {
+        "patient_id": beneficiary, "status": "in-progress", "class_code": "IMP",
+        "practitioner_id": physician, "department": "General Medicine",
+        "period_start": "2026-08-18T10:00:00+05:30",
+        "ward": "General Ward (Female)", "bed": "GW-3", "bed_rate": 1500})
+    claim_row = _claims.claim(claim_id)
+    matches = _claims.linkable_admissions(claim_row)
+    check("the current IPD stay is found by ABHA digits despite the dashes",
+          [m["encounter_id"] for m in matches] == [stay])
+    check("a finished stay is not offered for linking",
+          admission not in [m["encounter_id"] for m in matches])
+    try:
+        _claims.link_admission(claim_id, admission)
+        check("linking a non-matching admission is refused", False)
+    except ValueError:
+        check("linking a non-matching admission is refused", True)
+    draft_claim = _claims.create_claim(selected, "MemberId", "MD5SLS4X5")
+    try:
+        _claims.link_admission(draft_claim, stay)
+        check("linking before the claim is eligible is refused", False)
+    except ValueError:
+        check("linking before the claim is eligible is refused", True)
+    _claims.link_admission(claim_id, stay)
+    claim_row = _claims.claim(claim_id)
+    check("linking stores the patient, the stay and a default admission date",
+          claim_row["patient_id"] == beneficiary
+          and claim_row["encounter_id"] == stay
+          and claim_row["admission_date"] == "2026-08-18")
+
+    # --- the preauth draft
+    dx = [{"code": "233604007"}]                      # Pneumonia -> ICD-10 J18
+    team = [{"doctor": str(physician), "role": "admitting"}]
+    stay_dates = {"admission_date": "2026-08-18",
+                  "expected_discharge_date": "2026-08-22"}
+    try:
+        _claims.save_preauth(draft_claim, dict(stay_dates, case_type="nonpackage"),
+                             dx, team, [{"code": "BED-DAY", "qty": "4"}])
+        check("a preauth without a linked admission is refused", False)
+    except ValueError:
+        check("a preauth without a linked admission is refused", True)
+    try:
+        _claims.save_preauth(claim_id, dict(stay_dates, case_type="nonpackage"),
+                             [], team, [{"code": "BED-DAY", "qty": "4"}])
+        check("a preauth without a diagnosis is refused", False)
+    except ValueError:
+        check("a preauth without a diagnosis is refused", True)
+    try:
+        _claims.save_preauth(claim_id, dict(stay_dates, case_type="nonpackage"),
+                             dx, team, [])
+        check("a non-package case without items is refused", False)
+    except ValueError:
+        check("a non-package case without items is refused", True)
+    try:
+        _claims.save_preauth(claim_id, dict(stay_dates, case_type="nonpackage"),
+                             dx, team, [{"code": "BED-DAY", "qty": "0"}])
+        check("an item without a quantity is refused", False)
+    except ValueError:
+        check("an item without a quantity is refused", True)
+    try:
+        _claims.save_preauth(
+            claim_id, {"admission_date": "2026-08-18",
+                       "expected_discharge_date": "2026-08-01",
+                       "case_type": "package", "package_code": "SA001A"},
+            dx, team, [])
+        check("a discharge date before admission is refused", False)
+    except ValueError:
+        check("a discharge date before admission is refused", True)
+
+    _claims.save_preauth(claim_id, dict(stay_dates, case_type="nonpackage"),
+                         dx, team, [{"code": "BED-DAY", "qty": "4"},
+                                    {"code": "OT-MAJOR", "qty": "1"}])
+    claim_row = _claims.claim(claim_id)
+    children = _claims.preauth_children(claim_id)
+    check("a non-package estimate is master price times quantity",
+          claim_row["preauth_total"] == 4 * 1500 + 18000
+          and [i["amount"] for i in children["items"]] == [6000, 18000])
+    check("the diagnosis is stored with its ICD-10 coding",
+          children["diagnoses"][0]["icd10_code"] == "J18"
+          and children["diagnoses"][0]["snomed_code"] == "233604007")
+    check("the care team quotes the doctor and role",
+          children["care_team"][0]["practitioner_id"] == physician
+          and children["care_team"][0]["role"] == "admitting")
+
+    _claims.save_preauth(
+        claim_id, dict(stay_dates, case_type="package", package_code="SA001A"),
+        dx, team, [])
+    claim_row = _claims.claim(claim_id)
+    children = _claims.preauth_children(claim_id)
+    check("switching to a package takes the rate from the package master",
+          claim_row["package_name"] == "Appendicectomy (open)"
+          and claim_row["preauth_total"] == 27000)
+    check("re-saving replaces the children instead of stacking them",
+          len(children["diagnoses"]) == 1 and children["items"] == [])
+
+    # --- supporting documents
+    doc_id = _claims.add_document(claim_id, "admission-note.pdf",
+                                  "application/pdf", b"%PDF-1.4 test", "Note")
+    docs = _claims.documents(claim_id)
+    check("a PDF attaches with its size recorded",
+          [d["id"] for d in docs] == [doc_id]
+          and docs[0]["size"] == len(b"%PDF-1.4 test"))
+    try:
+        _claims.add_document(claim_id, "virus.exe", "application/octet-stream",
+                             b"MZ")
+        check("a non PDF/image upload is refused", False)
+    except ValueError:
+        check("a non PDF/image upload is refused", True)
+    try:
+        _claims.add_document(claim_id, "huge.png", "image/png",
+                             b"x" * (_claims.MAX_DOCUMENT_BYTES + 1))
+        check("an oversized upload is refused", False)
+    except ValueError:
+        check("an oversized upload is refused", True)
+    _claims.delete_document(doc_id)
+    check("a document can be removed", _claims.documents(claim_id) == [])
+
+    # --- the multipart parser the upload rides on
+    from emr.web.router import parse_multipart
+    multipart_body = (b"--BOUND\r\n"
+                      b'Content-Disposition: form-data; name="label"\r\n\r\n'
+                      b"ID card\r\n"
+                      b"--BOUND\r\n"
+                      b'Content-Disposition: form-data; name="file"; '
+                      b'filename="card.png"\r\n'
+                      b"Content-Type: image/png\r\n\r\n"
+                      b"\x89PNG\r\n\x1a\nBINARY\r\n"
+                      b"--BOUND--\r\n")
+    mp_form, mp_files = parse_multipart(
+        multipart_body, 'multipart/form-data; boundary=BOUND')
+    check("multipart text fields parse", mp_form.get("label") == ["ID card"])
+    check("multipart file parts keep their bytes exactly",
+          mp_files["file"][0]["filename"] == "card.png"
+          and mp_files["file"][0]["content_type"] == "image/png"
+          and mp_files["file"][0]["data"] == b"\x89PNG\r\n\x1a\nBINARY")
+    check("an unused file input posts no file",
+          parse_multipart(
+              b"--B\r\nContent-Disposition: form-data; name=\"file\"; "
+              b"filename=\"\"\r\nContent-Type: application/octet-stream"
+              b"\r\n\r\n\r\n--B--\r\n",
+              "multipart/form-data; boundary=B")[1] == {})
+
     section("master data")
     from emr import masters as _m
     from emr.web.common import doctor_options, term_options

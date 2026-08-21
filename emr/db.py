@@ -86,6 +86,15 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("observation", "value_display", "TEXT"),
     ("observation", "code_text", "TEXT"),
     ("wellness_record", "dialysis_session_id", "INTEGER"),
+    ("claim", "patient_id", "INTEGER"),
+    ("claim", "encounter_id", "INTEGER"),
+    ("claim", "admission_date", "TEXT"),
+    ("claim", "expected_discharge_date", "TEXT"),
+    ("claim", "case_type", "TEXT"),
+    ("claim", "package_code", "TEXT"),
+    ("claim", "package_name", "TEXT"),
+    ("claim", "preauth_total", "REAL"),
+    ("claim", "preauth_saved_at", "TEXT"),
 ]
 
 

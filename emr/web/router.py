@@ -146,6 +146,58 @@ def redirect(location: str, flash: str | None = None, kind: str = "success") -> 
     return Response(b"", 303, content_type="", headers=headers)
 
 
+_DISPOSITION = re.compile(r'(name|filename)="((?:[^"\\]|\\.)*)"')
+
+
+def parse_multipart(body: bytes, content_type: str) -> tuple[dict[str, list[str]],
+                                                             dict[str, list[dict]]]:
+    """Split a ``multipart/form-data`` body into text fields and file parts.
+
+    Returns ``(form, files)`` in the same ``{name: [values]}`` shape the
+    urlencoded path produces; each file is ``{"filename", "content_type",
+    "data"}``. The stdlib lost its multipart parser with ``cgi``, hence this
+    deliberately small one: it handles what browsers actually send.
+    """
+    form: dict[str, list[str]] = {}
+    files: dict[str, list[dict]] = {}
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        return form, files
+    delimiter = b"--" + match.group(1).strip().encode("utf-8")
+    for part in body.split(delimiter)[1:]:
+        if part.startswith(b"--"):  # the closing delimiter
+            break
+        if part.startswith(b"\r\n"):
+            part = part[2:]
+        if part.endswith(b"\r\n"):
+            part = part[:-2]
+        head, separator, data = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        name = filename = None
+        part_type = "application/octet-stream"
+        for line in head.decode("utf-8", "replace").split("\r\n"):
+            key, _, value = line.partition(":")
+            key = key.strip().lower()
+            if key == "content-disposition":
+                for attr, raw in _DISPOSITION.findall(value):
+                    decoded = raw.replace('\\"', '"').replace("\\\\", "\\")
+                    if attr == "name":
+                        name = decoded
+                    else:
+                        filename = decoded
+            elif key == "content-type":
+                part_type = value.strip().split(";")[0].strip() or part_type
+        if name is None:
+            continue
+        if filename is None:
+            form.setdefault(name, []).append(data.decode("utf-8", "replace"))
+        elif filename or data:  # skip the empty part an unused file input posts
+            files.setdefault(name, []).append({
+                "filename": filename, "content_type": part_type, "data": data})
+    return form, files
+
+
 def json_response(payload: Any, status: int = 200, download: str | None = None) -> Response:
     """A JSON response, optionally offered as a download."""
     body = json.dumps(payload, indent=2, ensure_ascii=False)
@@ -160,7 +212,8 @@ class Request:
     def __init__(self, method: str, path: str, query: dict[str, list[str]],
                  form: dict[str, list[str]], cookies: SimpleCookie,
                  params: dict[str, Any], body: bytes,
-                 headers: dict[str, str] | None = None):
+                 headers: dict[str, str] | None = None,
+                 files: dict[str, list[dict]] | None = None):
         self.method = method
         self.path = path
         self._query = query
@@ -169,6 +222,7 @@ class Request:
         self.params = params
         self.raw_body = body
         self._headers = {k.lower(): v for k, v in (headers or {}).items()}
+        self._files = files or {}
 
     def header(self, name: str, default: str = "") -> str:
         """One request header, matched case-insensitively."""
@@ -203,6 +257,10 @@ class Request:
 
     def f_or_none(self, name: str) -> str | None:
         return self.f(name) or None
+
+    def files_all(self, name: str) -> list[dict]:
+        """Every uploaded file posted under this field name (multipart only)."""
+        return self._files.get(name, [])
 
     def flash(self) -> tuple[str, str] | None:
         cookie = self.cookies.get("flash")
@@ -249,13 +307,15 @@ class App:
 
     def dispatch(self, method: str, path: str, query: dict, form: dict,
                  cookies: SimpleCookie, body: bytes,
-                 headers: dict[str, str] | None = None) -> Response:
+                 headers: dict[str, str] | None = None,
+                 files: dict[str, list[dict]] | None = None) -> Response:
         return _mounted(self._dispatch(method, path, query, form, cookies, body,
-                                       headers))
+                                       headers, files))
 
     def _dispatch(self, method: str, path: str, query: dict, form: dict,
                   cookies: SimpleCookie, body: bytes,
-                  headers: dict[str, str] | None = None) -> Response:
+                  headers: dict[str, str] | None = None,
+                  files: dict[str, list[dict]] | None = None) -> Response:
         routed = _strip_base(path)
         if routed is None:  # outside the mount point entirely
             return self._error(404, "Not found")
@@ -270,7 +330,7 @@ class App:
                 continue
             params = {name: conv(match.group(name)) for name, conv in converters}
             request = Request(method, path, query, form, cookies, params, body,
-                              headers)
+                              headers, files)
             return fn(request)
         if allowed:
             return self._error(405, "Method not allowed")
@@ -299,9 +359,13 @@ def make_handler(app: App):
             length = int(self.headers.get("Content-Length") or 0)
             if length:
                 body = self.rfile.read(length)
+            files: dict[str, list[dict]] = {}
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
             if ctype == "application/x-www-form-urlencoded":
                 form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            elif ctype == "multipart/form-data":
+                form, files = parse_multipart(
+                    body, self.headers.get("Content-Type") or "")
             elif ctype == "application/json" and body:
                 try:
                     payload = json.loads(body.decode("utf-8"))
@@ -314,7 +378,8 @@ def make_handler(app: App):
 
             try:
                 response = app.dispatch(method, unquote(parsed.path), query, form,
-                                        cookies, body, dict(self.headers.items()))
+                                        cookies, body, dict(self.headers.items()),
+                                        files)
             except Exception:  # pragma: no cover - surfaced in the browser
                 traceback.print_exc()
                 response = app._error(500, traceback.format_exc())
