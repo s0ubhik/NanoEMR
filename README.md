@@ -27,7 +27,7 @@ wellness records · billing with receipts · daily MIS · master data management
 python3 run.py --reset --demo      # clean database + demo data, then serve
 open http://127.0.0.1:8765
 
-python3 selftest.py                # 345 end-to-end checks, no server needed
+python3 selftest.py                # 673 end-to-end checks, no server needed
 ```
 
 `run.py` flags: `--port`, `--host`, `--demo` (seed two walked-through patient
@@ -42,7 +42,7 @@ exit). The database lives at `data/emr.db`; override with `NANOEMR_DB`.
 | Clinical | `/opd`, `/beds`, `/ipd`, `/wellness` | Consultation notes, ward board, admissions and discharge, wellness capture |
 | Dialysis | `/dialysis`, `…/machines`, `…/courses`, `…/sessions` | Courses (standing prescription), per-run parameters, pre/post flowsheet, intra-dialytic chart |
 | Diagnostics | `/lab`, `/pharmacy` | Panel ordering with analyte expansion; batch/expiry stock with FEFO issue |
-| Finance | `/billing`, `/reports` | GST invoices, part-payments with receipts, daily MIS, outstanding dues |
+| Finance | `/billing`, `/claims`, `/adjudicator`, `/reports` | GST invoices and receipts; NHCX claims end to end; the PMJAY payer-side adjudicator; daily MIS |
 | Facility | `/fhir`, `/masters`, `/settings` | FHIR export centre, master data, facility identity |
 
 The full tour is in **[docs/features.md](docs/features.md)**.
@@ -61,7 +61,7 @@ The full tour is in **[docs/features.md](docs/features.md)**.
 
 ```
 run.py                    entry point
-selftest.py               345 checks in named sections, one seeded database
+selftest.py               673 checks in named sections, one seeded database
 data/emr.db               SQLite (created on first run)
 docs/                     the documents above
 emr/

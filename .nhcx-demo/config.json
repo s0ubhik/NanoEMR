@@ -1,0 +1,13 @@
+{ "env": "sandbox", "listen": "127.0.0.1:8090",
+  "publicUrl": "http://127.0.0.1:8090/in",
+  "apiKey": "local-demo-key", "requireApiKey": true,
+  "participant": { "participantId": "1000004446@hcx", "name": "NanoEMR Hospital",
+    "clientId": "LOCAL_DEMO", "clientSecret": "local-demo-secret",
+    "privateKey": "@private_key.pem" },
+  "callback": { "url": "http://127.0.0.1:8765/callback", "appendPath": true, "timeoutSeconds": 20 },
+  "urls": { "nhcx": "http://127.0.0.1:8080/hcx/v1",
+            "participant": "http://127.0.0.1:8080/participanthcxservice",
+            "sessions": "http://127.0.0.1:8080/api/hiecm/gateway/v3/sessions" },
+  "auth": { "mode": "sessions", "tokenTtlSeconds": 1200 },
+  "ledger": { "enabled": true, "dir": "ledger" },
+  "log": { "level": "info", "format": "text" } }

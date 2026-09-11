@@ -35,6 +35,27 @@ MASTER_TABLES = {
 # has to go before all three.
 CLEAR_ORDER = [
     "fhir_export",
+    "claim_adjudication",   # -> claim
+    "claim_query",          # -> claim
+    "claim_enquiry",        # -> claim
+    "claim_payment_detail", # -> claim_payment
+    "claim_payment",        # -> claim
+    "claim_submission",     # -> claim
+    "claim_preauth",        # -> claim
+    "claim_predetermination",  # -> claim
+    "claim_auth_requirement",  # -> claim_auth
+    "claim_auth_item",      # -> claim_auth
+    "claim_auth",           # -> claim
+    "claim_form_answer",    # -> claim
+    "claim_line",           # -> claim
+    "claim_document",       # -> claim
+    "claim_item",           # -> claim
+    "claim_care_team",      # -> claim, practitioner
+    "claim_diagnosis",      # -> claim
+    "claim_plan_form",      # -> claim_plan
+    "claim_plan_benefit",   # -> claim_plan
+    "claim_plan",           # -> claim (the payer's package master for it)
+    "claim",                # NHCX claim episodes (patient activity)
     "dialysis_reading",     # -> dialysis_session
     "observation",          # -> lab_order, dialysis_session, wellness_record
     "wellness_record",      # -> dialysis_session
@@ -115,6 +136,8 @@ CODE_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Administrative", [
         ("charge", "Charge master"),
+        ("claim_package", "Claim packages (HBP)"),
+        ("payer_adapter", "Payer adapters (NHCX)"),
         ("department", "Departments"),
         ("ward", "Ward types"),
         ("encounter_type", "Encounter types"),
@@ -133,6 +156,8 @@ CODE_LABEL = {kind: label for _group, kinds in CODE_GROUPS for kind, label in ki
 EXTRA_HINT = {
     "lab_panel": "category|analyte codes|price, e.g. Biochemistry|2160-0,3094-0|600",
     "charge": "price|invoice type code, e.g. 500|00",
+    "claim_package": "package rate in ₹, e.g. 27000",
+    "payer_adapter": "adapter key — pmjay, kyrocare or generic",
     "ward": "per-day tariff",
     "medicine": "presentation, e.g. 500 mg tablet",
     "allergen": "default category: medication | food | environment",

@@ -481,6 +481,33 @@ def terminology_rows() -> list[tuple]:
         rows.append(_t("charge", c, d, system=f"{LOCAL_CS}/charge-codes",
                        extra=f"{price}|{itype}", order=i))
 
+    # Demo subset of PMJAY HBP packages for the preauth screen; a live
+    # deployment replaces these with the payer's contracted package list.
+    packages = [
+        ("MG001A", "Acute febrile illness — medical management (per day)", 1800),
+        ("MG015A", "Acute gastroenteritis with dehydration (per day)", 2000),
+        ("MN003A", "Haemodialysis (per session)", 2200),
+        ("SA001A", "Appendicectomy (open)", 27000),
+        ("SA002B", "Laparoscopic cholecystectomy", 32000),
+        ("SO013A", "Cataract surgery with IOL implant", 8000),
+        ("SC004B", "Caesarean delivery", 11500),
+        ("SB010A", "Fracture fixation — long bone (plating)", 24000),
+    ]
+    for i, (c, d, rate) in enumerate(packages):
+        rows.append(_t("claim_package", c, d, system=f"{LOCAL_CS}/hbp-package",
+                       extra=str(rate), order=i))
+
+    # Which payer participant code gets which adapter. `extra` is the adapter
+    # key from emr/payers.py; an unlisted payer falls back to `generic`.
+    for i, (code, name, key) in enumerate([
+            ("1518@hcx", "PMJAY / Ayushman Bharat", "pmjay"),
+            # The IRDAI payer portal in this repository, at the participant
+            # code its example config and the hcxkit sandbox profile use.
+            ("1000004805@hcx", "Dummy IRDAI Payer", "kyrocare"),
+    ]):
+        rows.append(_t("payer_adapter", code, name,
+                       system=f"{LOCAL_CS}/payer-adapter", extra=key, order=i))
+
     return rows
 
 

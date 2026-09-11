@@ -77,6 +77,8 @@ NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Finance", [
         ("billing", "/billing", "receipt-indian-rupee"),
+        ("claims", "/claims", "shield-check"),
+        ("adjudicator", "/adjudicator", "gavel"),
         ("reports", "/reports", "chart-column"),
     ]),
     ("Facility", [
@@ -101,6 +103,8 @@ NAV_LABEL = {
     "pharmacy": "Pharmacy & stock",
     "wellness": "Wellness records",
     "billing": "Billing",
+    "claims": "Claims",
+    "adjudicator": "PMJAY adjudicator",
     "reports": "Reports",
     "fhir": "FHIR export centre",
     "masters": "Masters",
@@ -115,6 +119,7 @@ NAV_ALIAS = {
     "ipd-new": "ipd",
     "dialysis-new": "dialysis-sessions",
     "wellness-new": "wellness",
+    "claim-new": "claims",
 }
 
 
@@ -339,13 +344,21 @@ def grid(*columns: str, cols: int = 2, gap: int = 4, breakpoint: str = "md") -> 
 
 
 def field(label: str, control: str, help_text: str = "", required: bool = False,
-          field_id: str = "") -> str:
-    """A labelled form control with optional help text."""
+          field_id: str = "", compact: bool = False) -> str:
+    """A labelled form control with optional help text.
+
+    ``compact`` drops the bottom margin. In a stacked form that margin is the
+    gap between fields; in a ``display-flex items-end`` filter row it is not —
+    flex aligns margin boxes, so a field carrying it rides a notch above the
+    bare buttons beside it. Filter rows pass ``compact=True`` and let the
+    row's own ``gap`` do the spacing.
+    """
     cls = "z-form-label z-form-label-required" if required else "z-form-label"
     for_attr = f' for="{esc(field_id)}"' if field_id else ""
     helper = (f'<div class="z-form-help mt"{st(mt=1)}>{esc(help_text)}</div>'
               if help_text else "")
-    return (f'<div class="mb"{st(mb=4)}><label class="{cls}"{for_attr}>{esc(label)}</label>'
+    shell = "<div>" if compact else f'<div class="mb"{st(mb=4)}>'
+    return (f'{shell}<label class="{cls}"{for_attr}>{esc(label)}</label>'
             f'<div class="z-form-controls mt"{st(mt=1)}>{control}{helper}</div></div>')
 
 

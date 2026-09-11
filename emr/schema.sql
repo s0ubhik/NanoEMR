@@ -703,9 +703,487 @@ CREATE TABLE IF NOT EXISTS wellness_record (
 CREATE INDEX IF NOT EXISTS ix_wellness ON wellness_record (patient_id,
                                                            recorded_on DESC);
 
+-- =========================================================================
+-- NHCX claims — policy search, coverage eligibility and (later) preauth.
+-- One row per claim episode; the FHIR exchange itself is delegated to a
+-- local hcxkit gateway, this table keeps the EMR-side ledger and verdict.
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS claim (
+    id               INTEGER PRIMARY KEY,
+    claim_no         TEXT NOT NULL UNIQUE,
+    created_at       TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'draft',  -- draft | checking | eligible | not-eligible | error
+    -- how the beneficiary was found (inputs to the policy search)
+    search_id_type   TEXT,                           -- MobileNo | AbhaNumber | MemberId
+    search_id_value  TEXT,
+    -- the policy the operator selected from the search result
+    member_id        TEXT NOT NULL,                  -- PMJAY beneficiary / member ID
+    policy_code      TEXT,                           -- national health plan identifier, e.g. PMJAY/HP/S/G
+    beneficiary_name TEXT,
+    abha_number      TEXT,
+    mobile_number    TEXT,
+    payer_id         TEXT,                           -- NIIP, e.g. 1518
+    payer_name       TEXT,
+    product_id       TEXT,
+    product_name     TEXT,
+    policy_json      TEXT,                           -- raw policy row as returned by the search
+    -- coverage eligibility exchange bookkeeping (async via hcxkit)
+    purpose          TEXT,                           -- validation | discovery
+    txn_id           TEXT,                           -- hcxkit ledger ULID of the outbound check
+    correlation_id   TEXT,                           -- x-hcx-correlation_id tying request to on_check
+    checked_at       TEXT,
+    error_message    TEXT,
+    -- payer verdict (flattened from the CoverageEligibilityResponse bundle)
+    inforce          INTEGER,                        -- 1 policy in force, 0 not
+    outcome          TEXT,                           -- complete | error | partial
+    disposition      TEXT,
+    auth_required    INTEGER,
+    allowed_amount   REAL,                           -- benefit allowedMoney (sum insured)
+    used_amount      REAL,                           -- benefit usedMoney
+    plan_name        TEXT,
+    plan_period_start TEXT,
+    plan_period_end  TEXT,
+    relationship     TEXT,                           -- subscriber relationship (self, child, …)
+    patient_gender   TEXT,
+    patient_dob      TEXT,
+    patient_address  TEXT,
+    patient_photo    TEXT,                           -- base64 or URL when the payer returns one
+    response_json    TEXT,                           -- full on_check bundle for audit
+    -- link to the admitted patient (same ABHA, current IPD stay)
+    patient_id       INTEGER REFERENCES patient (id),
+    encounter_id     INTEGER REFERENCES encounter (id),
+    -- preauth draft (children in claim_diagnosis / claim_care_team / claim_item)
+    admission_date   TEXT,                           -- YYYY-MM-DD
+    expected_discharge_date TEXT,                    -- provisional, YYYY-MM-DD
+    case_type        TEXT,                           -- package | nonpackage
+    package_code     TEXT,                           -- HBP package (case_type = package)
+    package_name     TEXT,
+    preauth_total    REAL,                           -- package rate or sum of items
+    preauth_saved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_status ON claim (status, id DESC);
+
+-- The payer's package master for this claim's policy-provider pair, fetched
+-- over NHCX with an InsurancePlan discovery Task (v1/insuranceplan/request).
+-- One row per claim: refetching replaces it, and the benefits cascade with it.
+CREATE TABLE IF NOT EXISTS claim_plan (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL UNIQUE REFERENCES claim (id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'fetching',  -- fetching | ready | empty | error
+    txn_id          TEXT,                          -- hcxkit ledger ULID of the request
+    correlation_id  TEXT,                          -- ties the request to the on_request
+    requested_at    TEXT,
+    fetched_at      TEXT,
+    error_message   TEXT,
+    -- what the discovery Task asked with (Task.input)
+    policy_code     TEXT,                          -- policyNumber
+    provider_id     TEXT,                          -- providerId, the facility's HFR ID
+    -- flattened from the payer's InsurancePlan resource
+    plan_identifier TEXT,
+    plan_title      TEXT,                          -- InsurancePlan.name
+    plan_type       TEXT,                          -- plan[0].type coding
+    sum_insured     REAL,                          -- plan[0].generalCost[0].cost
+    policy_documents TEXT,                         -- JSON: what every claim under this policy needs
+    response_json   TEXT                           -- full on_request bundle for audit
+);
+CREATE INDEX IF NOT EXISTS ix_claim_plan_corr ON claim_plan (correlation_id);
+
+-- One row per package (Approach 1: specificCost → category → benefit) or per
+-- covered benefit (Approach 2: coverage → benefit → limit); the payer bundle
+-- follows one shape or the other and both flatten to this.
+CREATE TABLE IF NOT EXISTS claim_plan_benefit (
+    id               INTEGER PRIMARY KEY,
+    plan_id          INTEGER NOT NULL REFERENCES claim_plan (id) ON DELETE CASCADE,
+    seq              INTEGER NOT NULL DEFAULT 1,
+    category_code    TEXT,                         -- speciality / coverage type
+    category_display TEXT,
+    code             TEXT NOT NULL,                -- package / benefit code
+    display          TEXT,
+    kind             TEXT,                         -- Procedure | Implant — what the code names
+    rate             REAL,                         -- package rate; 0 = bundled, not free
+    currency         TEXT,
+    cost_type        TEXT,                         -- package rate | included | conditional …
+    requirement      TEXT,                         -- Approach 2 benefit.requirement
+    conditions       TEXT,                         -- JSON: claim-condition code → value
+    extras           TEXT,                         -- JSON: stratification / implant tiers paid over the rate
+    supporting_info  TEXT                          -- JSON: documents the payer requires for this benefit
+);
+CREATE INDEX IF NOT EXISTS ix_claim_plan_benefit ON claim_plan_benefit (plan_id, seq);
+
+-- The questionnaires the payer ships with the plan — the dynamic forms a
+-- document requirement points at (STG checklists, discharge information …).
+-- Referenced by url, which is how `documentationUrl` names them; the payer
+-- sends the same form once per benefit that needs it, hence the unique index.
+CREATE TABLE IF NOT EXISTS claim_plan_form (
+    id       INTEGER PRIMARY KEY,
+    plan_id  INTEGER NOT NULL REFERENCES claim_plan (id) ON DELETE CASCADE,
+    url      TEXT NOT NULL,                        -- Questionnaire.url
+    form_id  TEXT,                                 -- Questionnaire.id
+    title    TEXT,
+    kind     TEXT,                                 -- questionnaire | stgquestionnaire
+    items    TEXT NOT NULL                         -- JSON: the questions and their options
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claim_plan_form ON claim_plan_form (plan_id, url);
+
+-- The payer's verdict on a *procedure set*: a coverage eligibility check with
+-- purpose `auth-requirements`, sent once the lines are chosen. It answers
+-- per line — is authorisation required, is it excluded, what is allowed — and
+-- names the documents and questionnaires that set needs.
+CREATE TABLE IF NOT EXISTS claim_auth (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL UNIQUE REFERENCES claim (id) ON DELETE CASCADE,
+    status         TEXT NOT NULL DEFAULT 'checking',  -- checking | ready | error
+    txn_id         TEXT,
+    correlation_id TEXT,
+    requested_at   TEXT,
+    settled_at     TEXT,
+    error_message  TEXT,
+    outcome        TEXT,
+    disposition    TEXT,
+    inforce        INTEGER,
+    response_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_auth_corr ON claim_auth (correlation_id);
+
+-- One row per line the payer answered on.
+CREATE TABLE IF NOT EXISTS claim_auth_item (
+    id             INTEGER PRIMARY KEY,
+    auth_id        INTEGER NOT NULL REFERENCES claim_auth (id) ON DELETE CASCADE,
+    seq            INTEGER NOT NULL DEFAULT 1,
+    code           TEXT NOT NULL,
+    display        TEXT,
+    category_code  TEXT,
+    auth_required  INTEGER,
+    excluded       INTEGER,
+    benefit_type   TEXT,                          -- Procedure | Implant | …
+    allowed_amount REAL
+);
+CREATE INDEX IF NOT EXISTS ix_claim_auth_item ON claim_auth_item (auth_id, seq);
+
+-- What that procedure set has to be accompanied by. `stage` is the payer's
+-- own word for when it is wanted; `at_preauth` is the adapter's reading of it,
+-- so the pre-authorisation screen asks for those and leaves the rest to the
+-- claim.
+CREATE TABLE IF NOT EXISTS claim_auth_requirement (
+    id         INTEGER PRIMARY KEY,
+    auth_id    INTEGER NOT NULL REFERENCES claim_auth (id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL DEFAULT 1,
+    kind       TEXT NOT NULL,                     -- document | form
+    code       TEXT,
+    display    TEXT,
+    form_url   TEXT,
+    stage      TEXT,
+    for_code   TEXT,                              -- the line it was asked for
+    at_preauth INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_claim_auth_req ON claim_auth_requirement (auth_id, seq);
+
+-- The preauth's line items, chosen from the payer's package master: the
+-- procedures (with quantity), the implants approved for them and the ward /
+-- ICU stratification tiers. Prices come from the plan, never from the form.
+CREATE TABLE IF NOT EXISTS claim_line (
+    id               INTEGER PRIMARY KEY,
+    claim_id         INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq              INTEGER NOT NULL DEFAULT 1,
+    kind             TEXT NOT NULL,                -- Procedure | Implant | Stratification
+    code             TEXT NOT NULL,
+    display          TEXT,
+    category_code    TEXT,                         -- speciality, for Claim.item.category
+    category_display TEXT,
+    unit_price       REAL NOT NULL DEFAULT 0,
+    quantity         REAL NOT NULL DEFAULT 1,
+    amount           REAL NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claim_line ON claim_line (claim_id, kind, code);
+
+-- Answers to the questionnaires the payer's package master demands. One row
+-- per question; they become the QuestionnaireResponse resources on the wire.
+CREATE TABLE IF NOT EXISTS claim_form_answer (
+    id       INTEGER PRIMARY KEY,
+    claim_id INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    form_url TEXT NOT NULL,
+    link_id  TEXT NOT NULL,
+    answer   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claim_form_answer
+    ON claim_form_answer (claim_id, form_url, link_id);
+
+-- The preauth submission exchange and the payer's verdict on it. Separate
+-- from the draft on `claim`, exactly as `claim_plan` is separate from the
+-- coverage check: a draft can be re-submitted, and the ledger is per attempt.
+CREATE TABLE IF NOT EXISTS claim_preauth (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL UNIQUE REFERENCES claim (id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'submitting',  -- submitting | approved | rejected | queried | error
+    txn_id          TEXT,
+    correlation_id  TEXT,
+    submitted_at    TEXT,
+    settled_at      TEXT,
+    error_message   TEXT,
+    claim_ref       TEXT,                          -- Claim.identifier sent
+    preauth_ref     TEXT,                          -- ClaimResponse.preAuthRef
+    api_call_id     TEXT,                          -- the last reply applied, so a redelivery is not
+    adjudication    TEXT,                          -- the reason code that IS the verdict
+    query_note      TEXT,                          -- the payer's query trail, verbatim
+    outcome         TEXT,                          -- complete | error | partial | queued
+    disposition     TEXT,
+    approved_amount REAL,
+    requested_amount REAL,
+    request_json    TEXT,                          -- the bundle as sent, for audit
+    response_json   TEXT,
+    -- withdrawing it again: a Task the payer acts on, its own exchange
+    cancel_txn_id         TEXT,
+    cancel_correlation_id TEXT,
+    cancel_requested_at   TEXT,
+    cancel_reason         TEXT,                   -- claims.CANCEL_REASONS key
+    cancel_note           TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_preauth_corr ON claim_preauth (correlation_id);
+
+-- A predetermination: the pre-authorisation's own bundle sent with
+-- `use: predetermination` before anything is committed. The payer prices it
+-- at once and answers with a ClaimResponse that binds nobody and opens no
+-- case, so it is its own row per ask rather than a state of the pre-auth.
+CREATE TABLE IF NOT EXISTS claim_predetermination (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'asking',  -- asking | answered | error
+    txn_id          TEXT,
+    correlation_id  TEXT,
+    requested_at    TEXT NOT NULL,
+    answered_at     TEXT,
+    error_message   TEXT,
+    outcome         TEXT,                          -- complete | error | partial
+    adjudication    TEXT,                          -- the reason code beside it
+    disposition     TEXT,
+    allowed_amount  REAL,                          -- total[benefit]
+    requested_amount REAL,
+    request_json    TEXT,
+    response_json   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_predetermination_corr ON claim_predetermination (correlation_id);
+CREATE INDEX IF NOT EXISTS ix_claim_predetermination_claim ON claim_predetermination (claim_id, id);
+
+-- The claim itself: everything the preauth carried, plus how the stay ended.
+-- Separate from `claim_preauth` because it is a separate exchange with its own
+-- ledger — and because a claim can go in after a preauth was queried.
+CREATE TABLE IF NOT EXISTS claim_submission (
+    id               INTEGER PRIMARY KEY,
+    claim_id         INTEGER NOT NULL UNIQUE REFERENCES claim (id) ON DELETE CASCADE,
+    status           TEXT NOT NULL DEFAULT 'draft',  -- draft | submitting | approved | queried | rejected | error
+    -- how the stay ended: PMJAY prices a completed episode, so this changes
+    -- what can be claimed as much as what is attached
+    discharge_mode   TEXT,                          -- normal | lama | dama | death
+    discharge_stage  TEXT,                          -- Before/During/After Surgery
+    discharge_date   TEXT,
+    surgery_date     TEXT,
+    death_date       TEXT,                          -- mode = death only
+    -- exchange bookkeeping
+    txn_id           TEXT,
+    correlation_id   TEXT,
+    submitted_at     TEXT,
+    settled_at       TEXT,
+    error_message    TEXT,
+    claim_ref        TEXT,
+    -- the payer's verdict
+    preauth_ref      TEXT,
+    api_call_id      TEXT,
+    adjudication     TEXT,
+    query_note       TEXT,
+    outcome          TEXT,
+    disposition      TEXT,
+    approved_amount  REAL,
+    requested_amount REAL,
+    request_json     TEXT,
+    response_json    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_submission_corr
+    ON claim_submission (correlation_id);
+
+-- Payment notices. This is the one leg the *payer* starts: it posts a notice
+-- when money moves, matched to a claim by the CLN identifier inside it rather
+-- than by a correlation id of ours. Several arrive over a claim's life —
+-- initiated, then cleared — so they are rows, not columns.
+CREATE TABLE IF NOT EXISTS claim_payment (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    claim_ref      TEXT,                           -- the claim number it named
+    correlation_id TEXT,                           -- the payer's, deduping redeliveries
+    -- who sent it: the acknowledgement goes back to *them*, which is not
+    -- always the payer the claim was raised with
+    sender_code    TEXT,
+    workflow_id    TEXT,
+    received_at    TEXT NOT NULL,
+    -- what the notice says
+    disposition    TEXT,                           -- "Payment initiated", …
+    payment_status TEXT,                           -- PaymentNotice.paymentStatus
+    payment_date   TEXT,
+    amount         REAL,
+    currency       TEXT,
+    utr            TEXT,                           -- Unique Transaction Reference
+    notice_json    TEXT,
+    -- the acknowledgement this EMR sends straight back
+    ack_status     TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | error
+    ack_txn_id     TEXT,
+    ack_correlation_id TEXT,
+    acknowledged_at TEXT,
+    ack_error      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_payment ON claim_payment (claim_id, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claim_payment_corr
+    ON claim_payment (correlation_id);
+
+-- A payer's query on a leg, as a CommunicationRequest on a thread of its own.
+-- PMJAY queries inside the ClaimResponse and is answered by resubmitting the
+-- pre-authorisation; an IRDAI payer asks on `communication/request` and is
+-- answered with a Communication carrying the request's correlation id back.
+CREATE TABLE IF NOT EXISTS claim_query (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    stage           TEXT NOT NULL DEFAULT 'preauth',  -- the leg queried: preauth | claim
+    correlation_id  TEXT,                          -- the request's own thread
+    request_id      TEXT,                          -- CommunicationRequest.id
+    claim_ref       TEXT,                          -- the claim number it named
+    sender_code     TEXT,
+    workflow_id     TEXT,                          -- the queried submission's thread
+    received_at     TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open',  -- open | answered | error
+    remarks         TEXT,                          -- what the payer wrote, joined
+    questions       TEXT,                          -- JSON: one entry per payload line
+    request_json    TEXT,
+    -- the reply this EMR sends
+    reply_text      TEXT,
+    reply_documents TEXT,                          -- JSON: claim_document ids attached
+    reply_txn_id    TEXT,
+    reply_correlation_id TEXT,
+    answered_at     TEXT,
+    error_message   TEXT,
+    reply_json      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_query ON claim_query (claim_id, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_claim_query_corr
+    ON claim_query (correlation_id);
+
+-- The reconciliation's breakdown: what was paid, what was withheld.
+CREATE TABLE IF NOT EXISTS claim_payment_detail (
+    id         INTEGER PRIMARY KEY,
+    payment_id INTEGER NOT NULL REFERENCES claim_payment (id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL DEFAULT 1,
+    reference  TEXT,
+    type_code  TEXT,                               -- Payment | RF | …
+    type_display TEXT,
+    date       TEXT,
+    amount     REAL
+);
+CREATE INDEX IF NOT EXISTS ix_claim_payment_detail
+    ON claim_payment_detail (payment_id, seq);
+
+-- Decisions taken from the PMJAY adjudicator screen. NHCX carries no record
+-- of them — they go to the payer service, outside the exchange — so this is
+-- the only trace of who decided what from here, and why.
+CREATE TABLE IF NOT EXISTS claim_adjudication (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    stage          TEXT NOT NULL,                 -- preauth | claim
+    case_number    TEXT,
+    role           TEXT,
+    action         TEXT,
+    usecase        TEXT,
+    correlation_id TEXT,
+    remarks        TEXT,
+    success        INTEGER NOT NULL DEFAULT 0,
+    http_status    INTEGER,
+    response_json  TEXT,
+    taken_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_claim_adjudication
+    ON claim_adjudication (claim_id, stage, id DESC);
+
+-- ICD-10 diagnoses quoted on the preauth (picked from the diagnosis master,
+-- which carries ICD-10 as the secondary coding next to SNOMED).
+CREATE TABLE IF NOT EXISTS claim_diagnosis (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq            INTEGER NOT NULL DEFAULT 1,
+    snomed_code    TEXT,
+    snomed_display TEXT,
+    icd10_code     TEXT NOT NULL,
+    icd10_display  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_dx ON claim_diagnosis (claim_id, seq);
+
+-- The doctors responsible for the admission, quoted on the preauth.
+CREATE TABLE IF NOT EXISTS claim_care_team (
+    id              INTEGER PRIMARY KEY,
+    claim_id        INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq             INTEGER NOT NULL DEFAULT 1,
+    practitioner_id INTEGER NOT NULL REFERENCES practitioner (id),
+    role            TEXT NOT NULL                    -- claims.CARE_ROLES key
+);
+CREATE INDEX IF NOT EXISTS ix_claim_team ON claim_care_team (claim_id, seq);
+
+-- Non-package case: charge-master items at their fixed price, quantity chosen
+-- by the operator. amount = unit_price * quantity, computed at save time.
+CREATE TABLE IF NOT EXISTS claim_item (
+    id         INTEGER PRIMARY KEY,
+    claim_id   INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    seq        INTEGER NOT NULL DEFAULT 1,
+    code       TEXT NOT NULL,                        -- charge master code
+    display    TEXT NOT NULL,
+    unit_price REAL NOT NULL DEFAULT 0,              -- fixed, from the master
+    quantity   REAL NOT NULL DEFAULT 1,
+    amount     REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_claim_item ON claim_item (claim_id, seq);
+
+-- Supporting documents (PDF / images) attached to the preauth, stored inline —
+-- a preauth carries a handful of files, well within SQLite's comfort zone.
+CREATE TABLE IF NOT EXISTS claim_document (
+    id           INTEGER PRIMARY KEY,
+    claim_id     INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    label        TEXT,
+    -- which of the payer's requirements this file answers, so the preauth
+    -- quotes its own code back rather than a generic "other document"
+    code         TEXT,
+    category     TEXT,
+    -- which leg of the exchange it was attached for: a claim-stage document
+    -- must not ride on the pre-authorisation, and vice versa
+    stage        TEXT NOT NULL DEFAULT 'preauth',
+    size         INTEGER NOT NULL DEFAULT 0,
+    data         BLOB NOT NULL,
+    uploaded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_claim_doc ON claim_document (claim_id, id);
+
 -- ---------------------------------------------------------------- sequences
 CREATE TABLE IF NOT EXISTS counter (
     name   TEXT PRIMARY KEY,
     value  INTEGER NOT NULL DEFAULT 0
 );
 
+
+-- The small exchanges a claim may start beside the main legs: a status
+-- enquiry ("where does this stand?") and a reprocess request (an appeal
+-- against a verdict). One row per ask, each on its own correlation id.
+CREATE TABLE IF NOT EXISTS claim_enquiry (
+    id             INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claim (id) ON DELETE CASCADE,
+    kind           TEXT NOT NULL,                  -- status | reprocess
+    stage          TEXT,                           -- preauth | claim, for status / reprocess
+    txn_id         TEXT,
+    correlation_id TEXT,
+    requested_at   TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'asking', -- asking | answered | error
+    answer         TEXT,                           -- entity_status / verdict / task status
+    detail         TEXT,                           -- what the payer said, in words
+    amount         REAL,                           -- an amount the answer carried
+    reason         TEXT,                           -- why a reprocess was asked for
+    error_message  TEXT,
+    request_json   TEXT,
+    response_json  TEXT,
+    answered_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_claim_enquiry_corr ON claim_enquiry (correlation_id);
+CREATE INDEX IF NOT EXISTS ix_claim_enquiry_claim ON claim_enquiry (claim_id, id);

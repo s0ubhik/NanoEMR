@@ -1,0 +1,21 @@
+starting mock NHCX exchange on 8080
+starting nhcx-adapter on 8090
+starting NanoEMR on 8765
+
+  ready.
+
+  NanoEMR          http://127.0.0.1:8765
+  NHCX claims      http://127.0.0.1:8765/claims
+  Adjudicator      http://127.0.0.1:8765/adjudicator
+
+  This hospital    1000004446@hcx
+  Payer            1000003538@hcx
+  Adapter          http://127.0.0.1:8090
+
+  Live traffic:    tail -f /Users/soubhik/Data/KyroCare/SHCXv4/nanoemr-gh/.nhcx-demo/adapter.log
+  Ctrl-C to stop everything.
+
+
+stopping...
+
+stopping...

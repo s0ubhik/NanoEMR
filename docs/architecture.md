@@ -27,7 +27,7 @@ at all.
 
 * **Domain modules never import the web layer.** A route reads the request,
   calls a domain function, redirects. Business rules live in `services`,
-  `hospital`, `dialysis`, `wellness` and `masters`, which is why 345 checks run
+  `hospital`, `dialysis`, `wellness` and `masters`, which is why 611 checks run
   without starting a server. (The two narrative strings in `fhir/bundles.py`
   that format their own dates, rather than importing a `ui` helper, are this
   rule costing three lines — accepted.)
@@ -87,7 +87,7 @@ HTTP layer is tested without sockets.
 
 ## The test suite
 
-`selftest.py` builds a throwaway database under `/tmp`, seeds it, and runs 345
+`selftest.py` builds a throwaway database under `/tmp`, seeds it, and runs 611
 checks in named sections against one shared fixture set — later sections use
 records earlier ones created, so **order matters**, and the destructive
 clear-patient-data section runs last. `check()` never raises; every failure is

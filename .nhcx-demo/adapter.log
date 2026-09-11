@@ -1,0 +1,21 @@
+15:29:07.649 WARN setup checks skipped (--skip-checks)
+15:29:07.650 INFO nhcx-adapter starting version=v1.0.0-4-g2db0e11-dirty callback=http://127.0.0.1:8765/callback nhcx=http://127.0.0.1:8080/hcx/v1 participants=1
+15:29:07.650 INFO listening addr=127.0.0.1:8090 tls=false participant=1000004446@hcx
+15:29:07.651 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=1ms
+15:29:50.412 INFO certificate fetched participant=1518@hcx
+15:29:50.457 7UP80001 ▲ OUT v1/coverageeligibility/check    → 1518@hcx        accepted        nhcx 202      43ms                          93f790e7-d0e5-42ef-85c3-914e857e3d28
+15:48:07.666 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=3ms
+16:08:07.645 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=2ms
+16:28:07.668 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=3ms
+16:48:07.663 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=5ms
+17:08:07.660 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=12ms
+17:28:07.645 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=4ms
+17:48:07.665 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=2ms
+19:49:13.340 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=10ms
+20:09:13.312 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=5ms
+20:29:13.314 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=10ms
+20:49:13.256 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=3ms
+21:09:13.240 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=6ms
+21:29:13.265 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=5ms
+21:49:13.238 INFO session token refreshed participant=1000004446@hcx mode=sessions ttl=20m0s took=5ms
+22:03:42.113 INFO shutting down
