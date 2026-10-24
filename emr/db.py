@@ -76,7 +76,6 @@ def connect() -> sqlite3.Connection:
 
 # Columns added after the first release; applied to databases created earlier.
 MIGRATIONS: list[tuple[str, str, str]] = [
-    ("organization", "participant_code", "TEXT"),
     ("observation", "dialysis_session_id", "INTEGER"),
     ("observation", "phase", "TEXT"),
     ("procedure", "dialysis_session_id", "INTEGER"),

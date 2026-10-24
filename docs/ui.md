@@ -57,6 +57,11 @@ Learn these before touching the markup:
    Sidebars want `z-nav-alt`, which paints the filled pill.
 5. **Raw-value utilities are bracketed**: `[max-h]` takes `--max-h` verbatim,
    while `max-h` multiplies by the spacing scale.
+6. **`ui.field()` carries a bottom margin.** That margin is the gap between
+   fields in a stacked form, but in a `display-flex items-end` filter row it
+   is not: flex aligns *margin* boxes, so a labelled field rides a notch above
+   the bare buttons next to it and the row looks broken. Filter rows pass
+   `field(..., compact=True)` and let the row's own `gap` do the spacing.
 
 The self-test's *0build markup contract* section pins traps 1 and 3 so they
 cannot silently return.

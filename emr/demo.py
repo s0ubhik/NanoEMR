@@ -234,7 +234,7 @@ def seed_demo() -> None:
     ipd_total = db.scalar("SELECT total_gross FROM invoice WHERE id = ?",
                           (ipd_invoice,)) or 0
     hospital.record_payment(ipd_invoice, round(ipd_total * 0.6, 2), "bank",
-                            "NEFT/887312", "Part payment; insurance claim pending")
+                            "NEFT/887312", "Part payment; balance pending")
 
     for offset, (patient_id, doctor_id, dept, reason) in enumerate([
             (opd_patient, physician, "General Medicine", "Fever"),

@@ -22,6 +22,7 @@ defects that reached working code and are named after what went wrong.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import os
@@ -1164,6 +1165,18 @@ def main() -> int:
           probe.dispatch("GET", "/thing/abc/part/x", {}, {},
                          empty, b"").status == 404)
 
+    @probe.post("/door/<path:route>")
+    def _door(request):
+        seen["route"] = request.params["route"]
+        return _redirect("/ok")
+
+    probe.dispatch("POST", "/door/v1/records/on_fetch", {}, {},
+                   empty, b"")
+    check("a path parameter swallows the whole tail, slashes included",
+          seen.get("route") == "v1/records/on_fetch")
+    check("a path parameter still needs something to match",
+          probe.dispatch("POST", "/door/", {}, {}, empty, b"").status == 404)
+
     flash_cookie = SimpleCookie()
     flash_cookie.load("flash=success%7Csaved%20it")
     check("a flash cookie round-trips",
@@ -1213,8 +1226,21 @@ def main() -> int:
         check("the CDN is left alone", f'href="{ui.CDN}/css/kit.min.css"' in page_html)
         check("the prefix without a trailing slash is still the dashboard",
               mounted.dispatch("GET", "/emr", {}, {}, SimpleCookie(), b"").status == 200)
-        check("a path off the mount point is a 404",
-              mounted.dispatch("GET", "/patients", {}, {}, SimpleCookie(), b"").status
+        # A proxy that strips the prefix before forwarding (nginx's
+        # `proxy_pass http://host:port/;`) hands the app a bare path; it is
+        # served, and the page it returns still links with the prefix, so the
+        # browser keeps asking for the mounted URLs.
+        stripped = mounted.dispatch("GET", "/patients", {}, {}, SimpleCookie(), b"")
+        check("a prefix-stripping proxy is served too", stripped.status == 200)
+        check("a stripped request still answers with mounted links",
+              '="/emr/patients"' in stripped.body.decode("utf-8"))
+        stripped_asset = mounted.dispatch("GET", "/static/logo.png", {}, {},
+                                          SimpleCookie(), b"")
+        check("a stripped asset request is served",
+              stripped_asset.status == 200
+              and stripped_asset.body[:8] == b"\x89PNG\r\n\x1a\n")
+        check("a path that is no route either way is still a 404",
+              mounted.dispatch("GET", "/nope", {}, {}, SimpleCookie(), b"").status
               == 404)
         check("the 404 page's own links are mounted too",
               '="/emr/"' in mounted.dispatch("GET", "/nope", {}, {}, SimpleCookie(),
@@ -1482,7 +1508,7 @@ def main() -> int:
         "identifier_type_code": "ROHINI",
         "identifier_type_display": "Registry of Hospitals in Network of Insurance "
                                    "(ROHINI) ID",
-        "participant_code": "sunrise@hcx", "state": "Tamil Nadu",
+        "state": "Tamil Nadu",
         "city": "Coimbatore", "address_line": "44 Gandhi Road",
         "postal_code": "641001"})
     refreshed = build_bundle("OPConsultRecord", visit)

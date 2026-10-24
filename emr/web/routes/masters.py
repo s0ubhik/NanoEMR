@@ -73,7 +73,7 @@ def index(request: Request):
                     ico="arrow-right") + "</div>")))
     cards.append(ui.card("Facility", (
         f'<p class="color"{st(color="var(--z-muted-f)")}>'
-        "Name, HFR ID, participant ID and address — these travel in every "
+        "Name, HFR ID and address — these travel in every "
         "exported FHIR document."
         f'</p><div class="mt"{st(mt=4)}>'
         + ui.button("Open", "/settings", style="z-button-primary",

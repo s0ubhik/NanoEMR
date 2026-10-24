@@ -40,7 +40,6 @@ CREATE TABLE IF NOT EXISTS organization (
     identifier_type_display TEXT NOT NULL,
     identifier_system     TEXT NOT NULL,
     identifier_value      TEXT NOT NULL,        -- the HFR / facility ID
-    participant_code      TEXT,                 -- NHCX / HCX participant ID
     -- Organization.type.coding fixed to hl7 organization-type
     type_code             TEXT NOT NULL DEFAULT 'prov',
     type_display          TEXT NOT NULL DEFAULT 'Healthcare Provider',
@@ -708,4 +707,3 @@ CREATE TABLE IF NOT EXISTS counter (
     name   TEXT PRIMARY KEY,
     value  INTEGER NOT NULL DEFAULT 0
 );
-

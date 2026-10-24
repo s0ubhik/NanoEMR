@@ -27,7 +27,7 @@ wellness records · billing with receipts · daily MIS · master data management
 python3 run.py --reset --demo      # clean database + demo data, then serve
 open http://127.0.0.1:8765
 
-python3 selftest.py                # 345 end-to-end checks, no server needed
+python3 selftest.py                # 378 end-to-end checks, no server needed
 ```
 
 `run.py` flags: `--port`, `--host`, `--demo` (seed two walked-through patient
@@ -61,7 +61,7 @@ The full tour is in **[docs/features.md](docs/features.md)**.
 
 ```
 run.py                    entry point
-selftest.py               345 checks in named sections, one seeded database
+selftest.py               378 checks in named sections, one seeded database
 data/emr.db               SQLite (created on first run)
 docs/                     the documents above
 emr/

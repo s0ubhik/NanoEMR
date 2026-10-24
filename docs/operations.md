@@ -5,8 +5,8 @@ Configuring a facility, resetting one, and what to fix before production.
 ## Facility settings (`/settings`)
 
 The facility's own record: name, HFR/facility ID and its identifier type
-(NHRR / ROHINI / PMJAY / provider number / other), identifier system, NHCX
-participant ID, address with a state picker, phone, email, GSTIN.
+(NHRR / ROHINI / PMJAY / provider number / other), identifier system,
+address with a state picker, phone, email, GSTIN.
 
 This is not cosmetic — the organization row is the `custodian` of every FHIR
 document and the `Organization` resource inside it, so changing the name or HFR

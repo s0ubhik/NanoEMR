@@ -126,6 +126,6 @@ See [fhir.md](fhir.md).
 beds, and all 41 clinical code pickers in one editor, plus the
 clear-patient-data reset. See [operations.md](operations.md).
 
-**Settings** (`/settings`) — facility name, HFR ID and identifier type, NHCX
-participant ID, address, contact, GSTIN. These travel in every exported bundle
+**Settings** (`/settings`) — facility name, HFR ID and identifier type,
+address, contact, GSTIN. These travel in every exported bundle
 as the document custodian.

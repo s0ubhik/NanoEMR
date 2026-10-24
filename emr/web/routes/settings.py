@@ -80,10 +80,6 @@ def index(request: Request):
                 "identifier_system", org["identifier_system"],
                 placeholder="https://facility.abdm.gov.in"),
                 help_text="The namespace the ID above is issued in."),
-            ui.field("Participant ID", ui.text_input(
-                "participant_code", org["participant_code"] or "",
-                placeholder="e.g. kyrocare@hcx"),
-                help_text="NHCX / HCX participant code used for claims exchange."),
             cols=2))
 
     address = (
@@ -140,7 +136,6 @@ def index(request: Request):
         ("Organization.address", ", ".join(filter(None, [
             org["address_line"], org["city"], org["district"], org["state"],
             org["postal_code"], org["country"]]))),
-        ("Participant ID (claims)", org["participant_code"]),
     ], cols=2))
 
     body = form + f'<div class="mt"{st(mt=5)}>' + preview + "</div>"
@@ -173,7 +168,6 @@ def update(request: Request):
         "identifier_system": request.f("identifier_system")
         or "https://facility.abdm.gov.in",
         "identifier_value": identifier_value,
-        "participant_code": request.f_or_none("participant_code"),
         "type_code": type_code,
         "type_display": dict(ORG_TYPES).get(type_code, "Healthcare Provider"),
         "phone": request.f_or_none("phone"),
